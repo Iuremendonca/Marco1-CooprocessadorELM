@@ -151,7 +151,7 @@ module ondeamagicaacontece_ounao (
         .wren      (w_wren_w),         // Lado Escrita (ISA)
         .rdaddress (ww_addr),          // Lado Leitura (FSM)
         .rden      (1'b1),             // Lado Leitura (Sempre lendo)
-        .q         (w_peso_data)       // Lado Leitura (FSM)
+        .q         (wpeso_data)       // Lado Leitura (FSM)
     );
 
     // ROM Bias (RAM 2-Port corrigida)
