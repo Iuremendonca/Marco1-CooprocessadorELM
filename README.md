@@ -1,7 +1,7 @@
 # ELM Acelerador — TEC 499 MI Sistemas Digitais 2026.1
 
 > **Marco 1 — Co-processador ELM em FPGA + Simulação**  
-> Universidade Estadual de Feira de Santana · Departamento de Tecnologia · Área de Eletrônica
+> Universidade Estadual de Feira de Santana · Departamento de Tecnologia 
 
 [![Simulation](https://img.shields.io/badge/simulação-Icarus%20Verilog-blue)](#simulação)
 [![Target](https://img.shields.io/badge/alvo-DE1--SoC%20(Cyclone%20V)-orange)](#hardware)
@@ -35,16 +35,32 @@ Este repositório contém a implementação RTL (Register-Transfer Level) em **V
 
 O sistema classifica imagens 28×28 pixels (MNIST) em escala de cinza, executando os seguintes estágios sequenciais:
 
-```
-Imagem (784 bytes)
-      │
-      ▼
-┌─────────────┐     ┌──────────────────────────┐     ┌──────────────┐     ┌─────────┐
-│ Input Layer │────▶│ Hidden Layer (128 neurs.) │────▶│ Output Layer │────▶│ Argmax  │
-│  784 nós    │     │  h = sigmoid(W·x + b)    │     │  y = β · h   │     │ pred    │
-└─────────────┘     └──────────────────────────┘     │  10 classes  │     │ [0..9]  │
-                                                      └──────────────┘     └─────────┘
-```
+ <img width="665" height="294" alt="image" src="https://github.com/user-attachments/assets/206e8c31-1b12-4c8d-b218-a92a96730bfc" />
+
+### 1.1 Entrada de Dados
+O processo inicia com a leitura do vetor de entrada que representa a imagem.
+* **Tamanho:** 784 bytes (ex: matriz $28 \times 28$).
+* **Ação:** Os dados são carregados para a memória interna do acelerador.
+
+### 1.2 Camada Oculta (Hidden Layer)
+Processamento da transformação não-linear dos dados de entrada.
+* **Equação:** $$h = \sigma(W_n \cdot x + b)$$
+* **Onde:** * $W_n$: Matriz de pesos.
+  * $b$: Vetor de bias.
+  * $\sigma$: Função de ativação.
+
+### 1.3 Camada de Saída (Output Layer)
+Cálculo da combinação linear dos neurônios ocultos com os pesos de saída.
+* **Equação:** $$y = \beta \cdot h$$
+* **Onde:** * $\beta$: Matriz de pesos de saída (obtida no pré-treino).
+
+### 1.4 Cômputo da Predição
+Fase final onde a rede decide qual classe o dado pertence.
+* **Lógica:** $$\text{pred} = \text{argmax}(y)$$
+* **Resultado:** O sistema retorna um valor no intervalo **0..9**, indicando o dígito identificado.
+
+---
+
 
 **Parâmetros do modelo:**
 | Parâmetro | Dimensão | Memória |
@@ -92,76 +108,11 @@ Imagem (784 bytes)
 ## 3. Arquitetura do Hardware
 
 ### 3.1 Diagrama de Blocos (Datapath + FSM)
-
-```
-                        ┌─────────────────────────────────────────────────────────┐
-                        │               ondeamagicaacontece (Top)                 │
-                        │                                                         │
-  clk ─────────────────▶│  ┌──────────┐   calcular    ┌────────────────────────┐ │
-  rst_n ───────────────▶│  │          │──────────────▶│     Camada Oculta      │ │
-  instrucao[31:0] ─────▶│  │  ISA /   │               │   (camada_oculta)      │ │
-  hps_write ───────────▶│  │  Decoder │   calcula_    │  Σ(pixel×peso) + bias  │ │
-                        │  │          │   saida        └──────────┬─────────────┘ │
-  hps_readdata[31:0] ◀──│  │          │──────────────▶           │ h_saida        │
-                        │  └─────┬────┘               ┌──────────▼─────────────┐ │
-                        │        │ start               │   Ativação Sigmoid     │ │
-                        │  ┌─────▼────┐               │  (ativacao_sigmoid)    │ │
-                        │  │          │◀─ ultimo_      │   Piecewise linear     │ │
-                        │  │  FSM     │   neuronio     └──────────┬─────────────┘ │
-                        │  │ (fsm_elm)│                           │ h_ativado      │
-                        │  │          │◀─ ultimo_      ┌──────────▼─────────────┐ │
-                        │  │ REPOUSO  │   neuronio_    │    RAM Neurônios       │ │
-                        │  │ CALC_OCU │   saida        │   (128 × 16 bits)      │ │
-                        │  │ CALC_SAI │               └──────────┬─────────────┘ │
-                        │  │ FIM      │               ┌──────────▼─────────────┐ │
-                        │  └──────────┘               │     Camada Saída       │ │
-                        │                             │   (camada_saida)       │ │
-                        │  ┌──────────────────────┐   │   Σ(h×beta)            │ │
-                        │  │       RAMs           │   └──────────┬─────────────┘ │
-                        │  │ ram_img   (784×8b)   │             │ y_saida        │
-                        │  │ ram_pesos (100K×16b) │   ┌──────────▼─────────────┐ │
-                        │  │ ram_bias  (128×16b)  │   │        Argmax          │ │
-                        │  │ ram_beta  (1280×16b) │   │   max(y[0..9])         │ │
-                        │  └──────────────────────┘   └──────────┬─────────────┘ │
-                        │                                         │ resultado[3:0] │
-                        └─────────────────────────────────────────┼───────────────┘
-                                                                  ▼
-                                                            result [3:0]
-```
+<img width="1024" height="984" alt="image" src="https://github.com/user-attachments/assets/976dae7d-c943-4f35-b241-67b7b1624aab" />     
 
 ### 3.2 Estados da FSM
 
-```
-         rst_n=0
-            │
-            ▼
-      ┌─────────────┐
-      │   REPOUSO   │◀────────────────────────────┐
-      │   (3'd0)    │                             │
-      └──────┬──────┘                             │
-             │ start=1                            │
-             ▼                                    │
-      ┌─────────────┐  ultimo_neuronio &           │
-      │ CALC_OCULTO │  foi_ultimo_oculto           │
-      │   (3'd1)    │──────────────────┐           │
-      │ calcular=1  │◀─────────────────┘           │
-      └─────────────┘  (loop até last neuron)      │
-             │ foi_ultimo_oculto & ativacao         │
-             ▼                                    │
-      ┌─────────────┐  foi_ultimo_saida            │
-      │  CALC_SAIDA │──────────────────┐           │
-      │   (3'd2)    │◀─────────────────┘           │
-      │calcula_saida│  (loop até last class)       │
-      └─────────────┘                              │
-             │ foi_ultimo_saida                    │
-             ▼                                    │
-      ┌─────────────┐                             │
-      │     FIM     │─────────────────────────────┘
-      │   (3'd3)    │  (ciclo seguinte)
-      │  pronto=1   │
-      └─────────────┘
-```
-
+<img width="838" height="1024" alt="image" src="https://github.com/user-attachments/assets/63d76b3d-a681-4fe9-89ca-9a10e4b5651c" />
 ---
 
 ## 4. Formato Numérico Q4.12
@@ -169,7 +120,7 @@ Imagem (784 bytes)
 Todos os valores internos utilizam ponto fixo **Q4.12** (signed, 16 bits):
 
 ```
-  Bit 15  │  Bits 14–12  │  Bits 11–0
+  Bit 15   │  Bits 14–12  │  Bits 11–0
   ─────────┼──────────────┼────────────
   Sinal    │  Parte int.  │  Parte frac.
   (1 bit)  │   (3 bits)   │  (12 bits)
@@ -184,9 +135,9 @@ Todos os valores internos utilizam ponto fixo **Q4.12** (signed, 16 bits):
 O acumulador interno usa 40 bits para evitar overflow durante a soma. O resultado final é saturado para a faixa Q4.12:
 
 ```verilog
-if (resultado_shiftado > 40'sd32767) saida <= 16'h7FFF;  // +7.999...
-else if (resultado_shiftado < -40'sd32768) saida <= 16'h8000;  // -8.0
-else saida <= resultado_shiftado[15:0];
+if (resultado > 40'sd32767) saida <= 16'h7FFF;  // +7.999...
+else if (resultado < -40'sd32768) saida <= 16'h8000;  // -8.0
+else saida <= resultado [15:0];
 ```
 
 ---
@@ -194,30 +145,47 @@ else saida <= resultado_shiftado[15:0];
 ## 5. Descrição dos Módulos RTL
 
 | Arquivo | Módulo | Função |
-|---------|--------|--------|
-| `ondeamagicaacontece.v` | `ondeamagicaacontece` | Top-level; integra todos os submódulos |
-| `fsm_elm.v` | `fsm_elm` | FSM de 4 estados; gera sinais de controle |
-| `mac.v` | `mac` | Multiply-Accumulate 40 bits; satura em Q4.12 |
-| `camada_saida.v` | `camada_saida` | Camada de saída; instancia MAC; conta 10 classes × 128 entradas |
-| `ativacao_sigmoid.v` | `ativacao_sigmoid` | Sigmoid piecewise linear; 4 segmentos |
-| `argmax.v` | `argmax` | Registra máximo de 10 valores; retorna índice |
-| `decodificador_7seg.v` | `decodificador_7seg` | Converte nibble para display 7 segmentos |
-| `instrucoes.v` | `instrucoes` | Wrapper de demonstração para as chaves/botões |
+| :--- | :--- | :--- |
+| `elm_accel.v` | `elm_accel` | **Top-level;** integra todos os submódulos e gerencia o barramento global. |
+| **Controle e Decodificação** | | |
+| `fsm_elm.v` | `fsm_elm` | FSM de 4 estados; coordena o fluxo de dados e sinais de controle. |
+| `decodificador_isa.v` | `decodificador_isa` | Decodifica instruções de 32 bits, extraindo Opcode, ADDR e DATA. |
+| **Datapath (Cálculo)** | | |
+| `camada_oculta.v` | `camada_oculta` | Gerencia o processamento da primeira camada ($784 \times 128$). |
+| `camada_saida.v` | `camada_saida` | Gerencia o processamento da camada de saída ($128 \times 10$). |
+| `mac.v` | `mac` | Unidade Multiply-Accumulate de 40 bits com saturação em **Q4.12**. |
+| `ativacao_sigmoid.v` | `ativacao_sigmoid` | Implementa a função Sigmóide via aproximação linear (4 segmentos). |
+| `argmax.v` | `argmax` | Compara os 10 resultados finais e identifica o índice da classe vencedora. |
+| **Memórias (RAM)** | | |
+| `ram_img.v` | `ram_img` | Armazena o vetor da imagem de entrada (784 bytes). |
+| `ram_pesos.v` | `ram_pesos` | Armazena a matriz de pesos $W$ (100K x 16 bits). |
+| `ram_bias.v` | `ram_bias` | Armazena o vetor de bias $b$ (128 x 16 bits). |
+| `ram_neuroniosativos.v` | `ram_neuroniosativos` | RAM para armazenar os resultados ativados ($h$) da camada oculta. |
+| `ram_beta.v` | `ram_beta` | Armazena a matriz de pesos de saída $\beta$ (1280 x 16 bits). |
+| **Interface e Visualização** | | |
+| `decodificador_7seg.v` | `decodificador_7seg` | Converte a predição para os displays de 7 segmentos da DE1-SoC. |
+| `instrucoes.v` | `instrucoes` | Interface para mapear chaves e botões físicos em instruções ISA. |
 
-> **Nota:** Os módulos `camada_oculta`, `isa`, `ram_img`, `ram_pesos`, `ram_bias`, `ram_neuroniosativos` e `ram_beta` são referenciados no top-level e devem estar presentes no projeto Quartus (gerados via Megafunction/IP ou inferidos).
 
-### 5.1 Sigmoid Piecewise Linear
+### 5.1 Otimização da Função de Ativação (Sigmoid Piecewise Linear)
 
-A ativação utiliza 4 segmentos lineares para aproximar `sigmoid(x)`:
+Para garantir a eficiência do acelerador na FPGA e evitar o uso de multiplicadores proprietários (blocos aritméticos integrados diretamente na arquitetura física de uma FPGA), a função de ativação foi implementada via aproximação linear por partes (**PWL**).
 
-| Faixa `|x|` | Aproximação |
-|-------------|-------------|
-| `< 1.0`     | `x/4 + 0.5` |
-| `[1.0, 2.5)` | `x/8 + 0.625` |
-| `[2.5, 4.5)` | `x/32 + 0.859375` |
-| `≥ 4.5`     | `1.0` (saturação) |
+#### Aproximação da Função Sigmóide Logística
 
-Para `x < 0`: simetria — `sigmoid(x) = 1 - sigmoid(|x|)`.
+| Intervalo de $\|x\|$ | Equação (Aproximação) | Operação RTL (Q4.12) |
+| :--- | :--- | :--- |
+| $[0, 1.0)$ | $f(x) = 0.25x + 0.5$ | `(abs >> 2) + 16'h0800` |
+| $[1.0, 2.5)$ | $f(x) = 0.125x + 0.625$ | `(abs >> 3) + 16'h0A00` |
+| $[2.5, 4.5)$ | $f(x) = 0.03125x + 0.859375$ | `(abs >> 5) + 16'h0DC0` |
+| $\ge 4.5$ | $f(x) = 1.0$ (Saturação) | `16'h1000` |
+
+> [!TIP]
+> De acordo com **Oliveira (2017)**, essa abordagem minimiza o uso de elementos lógicos e blocos de DSP, permitindo que o sistema atinja maiores frequências de operação ($F_{max}$) ao reduzir o caminho crítico do datapath.
+
+#### Comparativo entre curva da função original e a aproximação
+
+<img width="972" height="504" alt="image" src="https://github.com/user-attachments/assets/d0fd30d1-a618-4aaf-a1c6-d1342768bbfe" />
 
 ---
 
@@ -226,7 +194,7 @@ Para `x < 0`: simetria — `sigmoid(x) = 1 - sigmoid(|x|)`.
 A ISA utiliza palavras de 32 bits com o seguinte formato:
 
 ```
- 31      28  27     16  15       0
+ 31      28     27     16  15       0
  ┌─────────┬──────────┬──────────┐
  │ OPCODE  │  ADDR    │   DATA   │
  │ (4 bits)│ (12 bits)│ (16 bits)│
@@ -268,13 +236,14 @@ A ISA utiliza palavras de 32 bits com o seguinte formato:
 
 | Recurso | Utilizado | Disponível | % |
 |---------|-----------|------------|---|
-| ALMs (LUTs) | — | 32.070 | — |
-| Registradores | — | 128.280 | — |
-| DSP Blocks (18×18) | — | 87 | — |
-| M10K (BRAM) | — | 397 | — |
-| PLLs | — | 6 | — |
+| ALMs (LUTs) | 655 | 32.070 | 2% |
+| Registradores | 691 | 128.280 | 0,005% |
+|Pins| 67 | 457 | 15% |
+| DSP Blocks (18×18) | 2 | 87 | 2% |
+| M10K (BRAM) | 203 | 397 | 51% |
+| PLLs | 0 | 6 | 0% |
 
-> ⚠️ Preencher após síntese completa no Quartus.
+
 
 **Estimativa de memória (BRAMs M10K):**
 
@@ -306,7 +275,7 @@ A ISA utiliza palavras de 32 bits com o seguinte formato:
 |------------|--------|-----|
 | Quartus Prime Lite | 21.1 | Síntese e place & route |
 | ModelSim-Intel | 10.5b | Simulação RTL |
-| Icarus Verilog | 11.0 | Simulação CI/CD |
+| Icarus Verilog | 11.0 | Verificação saída esperada |
 | GTKWave | 3.3.x | Visualização de formas de onda |
 | Python | 3.10+ | Scripts de geração de vetores de teste e MIF |
 | NumPy | 1.24+ | Golden model e geração de dados |
@@ -603,3 +572,5 @@ MI-SD/
 4. **A máquina de aprendizado extremo (ELM)** — Computação Inteligente. Disponível em: [computacaointeligente.com.br](https://computacaointeligente.com.br/algoritmos/maquina-de-aprendizado-extremo/)
 5. **Intel Quartus Prime Lite Design Software** — versão 21.1.
 6. **Icarus Verilog** — versão 11.0. Disponível em: [iverilog.icarus.com](http://iverilog.icarus.com/)
+7. 
+OLIVEIRA, J. G. M. *Uma arquitetura reconfigurável de Rede Neural Artificial utilizando FPGA*. Dissertação (Mestrado) – UNIFEI, Itajubá, 2017.
