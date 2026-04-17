@@ -12,15 +12,14 @@
 
 ## Tabela de opcodes
 
-| Mnemônico | Opcode | ADDR | DATA | Efeito RTL | Status |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `STORE_IMG` | 0x1 | `addr_in[9:0]` | pixel [7:0] | `ram_img[ADDR] ← DATA[7:0]` | ✅ ok |
-| `STORE_WEIGHTS` | 0x2 | — | peso Q4.12 | `ram_pesos[temp_w_addr] ← DATA` | ⏳ 2 ciclos |
-| `STORE_BIAS` | 0x3 | `addr_in[6:0]` | bias Q4.12 | `ram_bias[ADDR] ← DATA` | ✅ ok |
-| `STORE_BETA` | 0x4 | `addr_in[10:0]` | peso Q4.12 | `ram_beta[ADDR] ← DATA` | ✅ ok |
-| `START` | 0x5 | — | — | `start_pulse ← 1` (1 ciclo) | ✅ ok |
-| `SET_W_ADDR` | 0x6 | — | — | `temp_w_addr ← instrucao[16:0]` | 🔄 atualizado |
-
+| Instrução | Opcode | Descrição |
+|-----------|--------|-----------|
+| `STORE_IMG` | `0x1` | Escreve pixel na `ram_img[ADDR]` = `DATA[7:0]` |
+| `STORE_WEIGHTS` | `0x2` | Escreve peso em `ram_pesos[ADDR]` = `DATA` (Q4.12) |
+| `STORE_BIAS` | `0x3` | Escreve bias em `ram_bias[ADDR]` = `DATA` (Q4.12) |
+| `STORE_BETA` | `0x4` | Escreve peso de saída em `ram_beta[ADDR]` = `DATA` |
+| `START` | `0x5` | Dispara pulso `start` para a FSM |
+| `STATUS` | `0x6` | Lê estado (`hps_readdata`): `[7:4]` = resultado, `[2:0]` = estado FSM |
 
 
 ---
