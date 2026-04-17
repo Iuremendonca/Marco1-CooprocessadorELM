@@ -19,6 +19,7 @@ module decodificador_isa (
     output reg [10:0] beta_addr,     // Endereço na RAM de beta (0..1279)
     output reg signed [15:0] data_to_mem, // Dado a ser escrito na RAM selecionada
     output reg wren_w, wren_img, wren_bias, wren_beta // Sinais de habilitação de escrita
+
 );
 
     reg [31:0] save_instrucao;  // Instrução registrada na borda do clock
@@ -32,6 +33,18 @@ module decodificador_isa (
 
     reg [16:0] temp_w_addr;	// Endereço W configurado previamente por opcode 0x6
 
+	 reg [31:0] ciclo_count;	//
+
+	// Lógica do contador de ciclos
+	always @(posedge clk) begin
+		 if (!rst_n || start_pulse) begin
+			  ciclo_count <= 32'b0; // Reseta ao iniciar nova inferência
+		 end else if (fsm_busy) begin
+			  ciclo_count <= ciclo_count + 1'b1; // Incrementa enquanto a FSM trabalha
+		 end
+	end
+	 
+	 
     // Captura e validação da instrução recebida
     always @(posedge clk) begin
         if (!rst_n) begin
@@ -40,7 +53,7 @@ module decodificador_isa (
         end else begin
             save_instrucao <= instrucao;	// Registra instrução a cada ciclo
             // Detecta opcode inválido (> 6) quando o HPS está escrevendo
-            if (!hps_write && (instrucao[31:28] > 4'h6))
+            if (!hps_write && (instrucao[31:28] > 4'h7))
                 error_flag <= 1'b1;	// Seta flag e mantém até reset
 					// Limpa erro apenas com reset
         end
@@ -117,6 +130,11 @@ module decodificador_isa (
                     4'h6: begin
                         temp_w_addr <= addr_win; // Guarda endereço para uso no opcode 0x2
                     end
+						  
+						  4'h7: begin
+								// CYCLE: Retorna a quantidade de ciclos da inferencia
+								hps_readdata <= ciclo_count;
+						  end
 
                     default: begin
                         // Opcode inválido: erro já registrado no bloco de captura acima
