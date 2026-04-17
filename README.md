@@ -137,7 +137,7 @@ Fase final onde a rede decide qual classe o dado pertence.
 
 A arquitetura segue os princípios de co-processadores para aceleração de redes neurais em FPGA [[2]](#15-referências)[[7]](#15-referências).
 
-<img width="537" height="573" alt="image" src="https://github.com/user-attachments/assets/ab61af1a-7c5c-48e5-9792-d2739e9a1c1d" />
+<img width="591" height="940" alt="image" src="https://github.com/user-attachments/assets/adea536d-085e-491e-bc11-897d8a7fea6b" />
 
 
 ### 3.2 Estados da FSM
@@ -198,11 +198,66 @@ else saida <= resultado [15:0];
 | `instrucoes.v` | `instrucoes` | Interface para mapear chaves e botões físicos em instruções ISA. |
 
 ---
+### 5.1 `decodificador_isa.v` — decodificador de instruções
 
-### 5.1 Otimização da Função de Ativação (Sigmoid Piecewise Linear)
+Faz a ponte entre o processador ARM (HPS) e o hardware de inferência. O HPS envia um barramento de 32 bits (`instrucao`) junto com um pulso de escrita (`hps_write`), e o módulo ISA decodifica o opcode para determinar a operação:
 
-Para garantir a eficiência do acelerador na FPGA e evitar o uso de multiplicadores proprietários (blocos aritméticos integrados diretamente na arquitetura física de uma FPGA), a função de ativação foi implementada via aproximação linear por partes (**PWL**), utilizando deslocamento de bits durante o processo. 
-Para entradas negativas, foi usada a seguinte relação y(-x) = 1-y(x).
+- **Escrita nas RAMs** — distribui o dado (`data_to_mem`) e o endereço correto (`w_addr`, `img_addr`, `bias_addr`, `beta_addr`) para cada memória, ativando o sinal de escrita correspondente (`wren_w`, `wren_img`, `wren_bias`, `wren_beta`).
+- **Início da inferência** — gera o pulso `start_pulse` que coloca a FSM em movimento.
+- **Leitura do resultado** — disponibiliza o dígito predito pelo argmax em `hps_readdata`, com informações de status (busy/done) para que o HPS saiba quando o resultado é válido.
+
+O módulo também monitora os sinais `fsm_busy` e `fsm_done` para evitar que o HPS inicie uma nova inferência enquanto a anterior ainda está em execução.
+
+---
+
+### 5.2 `fsm_elm.v` — máquina de estados
+
+Controla o sequenciamento das duas fases de cálculo. Possui quatro estados:
+
+| Estado | Descrição |
+|---|---|
+| `REPOUSO` | Aguarda o pulso `start`. |
+| `CALC_OCULTO` | Habilita `calcular`, ativando a camada oculta. Permanece neste estado até que o sinal `ultimo_neuronio` indique que todos os 128 neurônios foram processados. |
+| `CALC_SAIDA` | Habilita `calcula_saida`, ativando a camada de saída. Permanece até `ultimo_neuronio_saida`, que sinaliza o fim das 10 classes. |
+| `FIM` | Pulsa `pronto` por um ciclo, notificando o ISA de que o resultado está disponível, e retorna ao `REPOUSO`. |
+
+A FSM utiliza registradores auxiliares (`foi_ultimo_oculto`, `foi_ultimo_saida`) para capturar as bordas dos sinais de fim de camada e evitar transições espúrias.
+
+---
+
+### 5.3 `mac.v` — multiply-accumulate
+
+Núcleo aritmético reutilizado pelas duas camadas. Opera em **ponto fixo Q4.12** (12 bits fracionários) e segue o seguinte protocolo:
+
+1. A cada ciclo em que `dado_valido` está ativo, calcula `mult_atual = valor × peso` (resultado de 32 bits) e acumula em um registrador de **40 bits** com sinal.
+2. Quando `fim_neuronio` é assinalado (último pixel do neurônio atual), soma o `bias` alinhado ao ponto fixo (`bias << 12`) e aplica um **shift aritmético de 12 bits à direita** para converter de volta à representação Q4.12.
+3. O resultado é **saturado** para o intervalo `[−32768, 32767]` (int16) antes de ser registrado em `saida`.
+4. O sinal `ativacao` é pulsado por um ciclo para indicar que `saida` é válido.
+
+O acumulador de 40 bits garante que produtos intermediários não transbordem, mesmo com 784 multiplicações acumuladas.
+
+---
+
+### 5.4 `camada_oculta.v` — camada oculta (128 neurônios)
+
+Gerencia os contadores de endereço e alimenta o MAC com os dados corretos para calcular a saída dos 128 neurônios ocultos.
+
+**Normalização do pixel:** antes de entrar no MAC, cada pixel `uint8` é convertido para Q4.12 com um shift de 4 bits à esquerda (`pixel << 4`), mapeando o intervalo `[0, 255]` para `[0.0, ~1.0]` em ponto fixo.
+
+**Endereçamento:** dois contadores controlam o acesso às RAMs:
+- `cnt_pixel` (0–783): percorre os 784 pixels de uma imagem para cada neurônio.
+- `cnt_neuronio` (0–127): avança para o próximo neurônio após todos os pixels serem processados.
+- `cnt_peso` (0–100351): avança continuamente sem reset parcial, apontando diretamente para o peso `W[neurônio][pixel]` na `ram_pesos`.
+
+Um pipeline de 1 ciclo (`calcular_d`, `fim_pixel_d`) sincroniza os dados lidos da RAM com o MAC, compensando a latência de leitura das memórias síncronas.
+
+---
+
+### 5.5 Otimização da Função de Ativação (Sigmoid Piecewise Linear)
+
+Para garantir a eficiência do acelerador na FPGA e evitar o uso de multiplicadores proprietários (blocos aritméticos integrados diretamente na arquitetura física de uma FPGA), a função de ativação foi implementada via aproximação linear por partes (**PWL**). 
+
+Se a entrada for negativa, aplica a simetria da sigmoid: `resultado = 1.0 − sigmoid(|x|)`. As divisões são implementadas como shifts aritméticos à direita, e todas as constantes estão representadas em Q4.12. O módulo também mantém um contador `addr_out` que incrementa a cada ativação, gerando automaticamente o endereço de escrita na `ram_neuroniosativos`
 
 #### Aproximação da Função Sigmóide Logística
 
@@ -222,6 +277,24 @@ Para entradas negativas, foi usada a seguinte relação y(-x) = 1-y(x).
 
 ---
 
+### 5.6 `camada_saida.v` — camada de saída (10 classes)
+
+Calcula os logits das 10 classes do classificador usando o mesmo módulo MAC, mas com duas diferenças importantes em relação à camada oculta:
+
+- **Sem função de ativação:** os logits `y[c]` são passados diretamente para o argmax, sem passar pela sigmoid.
+- **Bias zerado:** o campo de bias é fixado em `16'sd0`, pois os pesos `beta` já incorporam o viés da regressão de saída do ELM.
+
+O endereçamento percorre `cnt_h` (0–127) e `cnt_classe` (0–9), com o endereço do peso calculado como `addr_peso_saida = cnt_h × 10 + cnt_classe`, refletindo o layout linha-maior da `ram_beta`. Ao final de cada classe, o sinal `y_valida` é pulsado para notificar o argmax.
+
+---
+
+### 5.7 `argmax.v` — seleção da classe predita
+
+Percorre as 10 classes `y[0..9]` à medida que chegam (um por pulso de `y_valida`) e mantém o valor máximo e seu índice em registradores internos. O contador `current_idx` é incrementado automaticamente a cada logit recebido, eliminando a necessidade de um endereço externo.
+
+Ao receber o pulso `pronto` da FSM, o índice vencedor é transferido para a saída `saida[3:0]`, que representa o dígito predito (0–9). O sinal `clear` (gerado pelo pulso `start`) reinicia o módulo antes de cada inferência, garantindo que o resultado anterior não contamine a próxima predição.
+
+---
 ## 6. Mapa de Registradores / ISA
 
 ### 6.1 Banco de registradores
