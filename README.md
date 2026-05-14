@@ -821,8 +821,8 @@ hps/
 ├── instrucoes.c        ← driver em C com menu interativo
 ├── rotinas.s           ← rotinas ARM assembly (syscalls + acesso ao hardware)
 ├── hps_0.h             ← cabeçalho com offsets dos PIOs gerado a partir do soc_system.sopcinfo
-├── ghrd_top.v          ← top-level do projeto: instancia o soc_system (gerado pelo soc_system.qsys) e o elm_accel
 └── quartus/
+    ├── ghrd_top.v      ← top-level do projeto: instancia o soc_system (gerado pelo soc_system.qsys) e o elm_accel
     ├── soc_system.qpf  ← arquivo de projeto Quartus
     ├── soc_system.qsf  ← configurações de pinos e síntese
     └── soc_system.qsys ← definição dos PIOs e conexões no Platform Designer
