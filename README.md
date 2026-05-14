@@ -820,7 +820,8 @@ A função `processar_hardware_asm(buffer, opcode, limite)` implementa em ARM as
 hps/
 ├── instrucoes.c   ← driver principal em C
 ├── rotinas.s      ← rotinas ARM assembly (syscalls + acesso ao hardware)
-└── Makefile       ← compilação cruzada para ARM
+├── hps_0.h        ← cabeçalho com offsets dos PIOs gerado pelo sopcinfo
+└── ghrd_top.v     ← top-level atualizado com os fios HPS↔ELM     
 ```
 
 Os arquivos binários de pesos (`pesos.bin`, `bias.bin`, `beta.bin`) e a imagem de teste (`quatro.bin`) devem ser copiados para o mesmo diretório antes de executar o driver na placa.
