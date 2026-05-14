@@ -17,6 +17,7 @@
 
 ## 📋 Sumário
 
+### Marco 1 — Co-processador ELM em FPGA + Simulação
 1. [Visão Geral do Projeto](#1-visão-geral-do-projeto)
 2. [Levantamento de Requisitos](#2-levantamento-de-requisitos)
 3. [Arquitetura do Hardware](#3-arquitetura-do-hardware)
@@ -32,6 +33,13 @@
 13. [Estrutura do Repositório](#13-estrutura-do-repositório)
 14. [Equipe](#14-equipe)
 15. [Referências](#15-referências)
+
+### Marco 2 — Comunicação HPS↔FPGA
+16. [Visão Geral do Marco 2](#16-visão-geral-do-marco-2)
+17. [Configuração do Platform Designer](#17-configuração-do-platform-designer)
+18. [Geração do Cabeçalho de Endereços](#18-geração-do-cabeçalho-de-endereços)
+19. [Driver em C e Rotinas Assembly](#19-driver-em-c-e-rotinas-assembly)
+20. [Estrutura da Pasta `hps/`](#20-estrutura-da-pasta-hps)
 
 
 ---
@@ -683,6 +691,139 @@ MI-SD/
 6. **Icarus Verilog** — versão 11.0. Disponível em: [iverilog.icarus.com](http://iverilog.icarus.com/)
 7. OLIVEIRA, J. G. M. *Uma arquitetura reconfigurável de Rede Neural Artificial utilizando FPGA*. Dissertação (Mestrado) – UNIFEI, Itajubá, 2017. Disponível em: [repositorio.unifei.edu.br/xmlui/handle/123456789/861](https://repositorio.unifei.edu.br/xmlui/handle/123456789/861)
 
+---
+
+## Marco 2 — Comunicação HPS↔FPGA
+
+---
+
+## 16. Visão Geral do Marco 2
+
+Este marco implementa o lado do software: o código que roda no processador ARM (HPS) da DE1-SoC e envia instruções ao co-processador ELM sintetizado na FPGA. A comunicação é feita através do barramento **Lightweight HPS-to-FPGA AXI**, um canal de 32 bits mapeado no endereço físico `0xFF200000` que permite ao ARM escrever e ler registradores da FPGA diretamente via ponteiros de memória.
+
+O fluxo completo de uma inferência a partir do HPS é:
+
+1. Carregar os pesos W (100 352 elementos) na `ram_pesos` via opcode `STORE_WEIGHTS`
+2. Carregar o bias (128 elementos) na `ram_bias` via opcode `STORE_BIAS`
+3. Carregar os pesos β (1 280 elementos) na `ram_beta` via opcode `STORE_BETA`
+4. Carregar a imagem (784 pixels) na `ram_img` via opcode `STORE_IMG`
+5. Disparar a FSM com `START`
+6. Disparar `STATUS` e ler o dígito predito nos bits `[7:4]` no terminal
+
+> A ordem de carga dos pesos (passos 1–3) é livre entre si, mas todos devem
+> ser enviados antes do `START`. O driver não impede disparar a inferência sem
+> os pesos carregados — essa responsabilidade é do usuário.
+
+---
+
+## 17. Configuração do Platform Designer
+
+Para que o HPS consiga enxergar o co-processador, três componentes **PIO (Parallel I/O)** foram adicionados ao `soc_system.qsys` no Platform Designer e conectados à porta mestre `h2f_lw_axi_master` do HPS:
+<img width="767" height="660" alt="image" src="https://github.com/user-attachments/assets/6e16c395-be9d-4126-b795-340f37011193" />
+
+| Componente | Direção | Offset (LW Bridge) | Função |
+|---|---|---|---|
+| `pio_readdata` | Input (32 bits) | `0x0000` | Leva o resultado da FPGA ao HPS (`hps_readdata`) |
+| `pio_hpswrite` | Output (2 bits) | `0x0010` | Pulso de escrita e reset (`hps_write`) |
+| `pio_instrucao` | Output (32 bits) | `0x0020` | Palavra de instrução de 32 bits (`instrucao`) |
+
+Cada PIO foi exportado como `Conduit` e conectado nos fios correspondentes do top-level `ghrd_top.v` (`fio_instrucao`, `fio_hps_write`, `fio_hps_readdata`), que por sua vez chegam às portas do módulo `elm_accel`.
+
+Após configurar os PIOs, o HDL foi regenerado via **Generate > Generate HDL...** e o projeto recompilado no Quartus para gravar o novo `.sof` na placa.
+
+---
+
+## 18. Geração do Cabeçalho de Endereços
+
+Para que o software em C conheça os offsets de cada PIO sem hardcodá-los, o cabeçalho `hps_0.h` foi gerado a partir do arquivo `.sopcinfo` do projeto:
+
+```bash
+sopc-create-header-files "./soc_system.sopcinfo" --single hps_0.h --module hps_0
+```
+
+O arquivo gerado define constantes como `PIO_INSTRUCAO_BASE`, `PIO_HPSWRITE_BASE` e `PIO_READDATA_BASE` — os offsets de cada PIO dentro do espaço do Lightweight Bridge. São esses valores que as rotinas assembly usam para calcular os endereços virtuais após o `mmap`.
+
+---
+
+## 19. Driver em C e Rotinas Assembly
+
+### 19.1 `/dev/mem` e `mmap` — acesso ao hardware a partir do Linux
+
+O Linux que roda no HPS protege o acesso direto a endereços físicos. O caminho padrão é abrir `/dev/mem` — um arquivo especial que representa toda a memória física do sistema — e usar `mmap` para criar um mapeamento entre o endereço físico do barramento Lightweight HPS-to-FPGA (`0xFF200000`) e um ponteiro virtual acessível pelo processo:
+
+```
+/dev/mem  →  mmap(0xFF200000, 4KB)  →  ponteiro virtual
+                     ↑
+             base do LW Bridge
+```
+
+A partir desse ponteiro, somar um offset equivale a acessar diretamente o registrador físico correspondente na FPGA, como se fosse uma escrita no barramento AXI.
+
+### 19.2 Compilação e execução
+
+O driver é compilado cruzando C com Assembly diretamente no HPS:
+
+```bash
+gcc instrucoes.c rotinas.s -o driver
+sudo ./driver
+```
+
+O `sudo` é necessário porque o acesso ao `/dev/mem` exige privilégios de root.
+
+### 19.3 `instrucoes.c` — interface interativa
+
+Ao executar, o programa apresenta um menu interativo onde o usuário escolhe qual instrução enviar ao co-processador. A depender da opção escolhida, o arquivo binário correspondente é aberto, seus dados são carregados em um buffer e a função assembly `processar_hardware_asm` é chamada com esse buffer, o opcode adequado e o número de elementos a enviar:
+
+| Opção no menu | Arquivo lido | Opcode | Elementos |
+|---|---|---|---|
+| Carregar imagem | `quatro.bin` | `0x1` | 784 (uint8) |
+| Carregar pesos W | `pesos.bin` | `0x2` | 100 352 (int16) |
+| Carregar bias | `bias.bin` | `0x3` | 128 (int16) |
+| Carregar beta | `beta.bin` | `0x4` | 1 280 (int16) |
+| Start | — | `0x5` | — |
+| Status | — | `0x0` | — |
+
+O fluxo completo de uma inferência exige executar as opções na seguinte ordem: carregar todos os pesos (W, bias, beta), carregar a imagem, disparar o `start` e então consultar o `status` para ler o dígito predito.
+
+A separação entre C e Assembly foi intencional: o C cuida da lógica de alto nível (menu, leitura de arquivos, alocação de buffer) enquanto o assembly lida diretamente com as syscalls e os acessos ao hardware.
+
+### 19.4 `rotinas.s` — rotinas ARM Assembly
+
+A função `processar_hardware_asm(buffer, opcode, limite)` implementa em ARM assembly o ciclo completo de acesso ao hardware:
+
+**1. Abertura do `/dev/mem`** via syscall `SYS_OPEN` com flags `O_RDWR | O_SYNC` — o `O_SYNC` garante que nenhuma escrita seja cacheada pelo kernel antes de chegar ao hardware.
+
+**2. Mapeamento via `mmap2`** — mapeia 4 KB a partir do offset `0xFF200` (endereço físico `0xFF200000`) para um endereço virtual em `r8`. Três ponteiros são calculados a partir dele:
+
+| Registrador | Offset | PIO mapeado | Direção |
+|---|---|---|---|
+| `r1` | `+0x20` | `pio_instrucao` | HPS → FPGA (instrução 32 bits) |
+| `r2` | `+0x10` | `pio_hpswrite` | HPS → FPGA (pulso de clock) |
+| `r12` | `+0x00` | `pio_readdata` | FPGA → HPS (resultado/status) |
+
+**3. Despacho por opcode** — um bloco de comparações seleciona o caminho correto:
+
+- **Status (0x0):** escreve opcode 0 no `pio_instrucao`, pulsa, lê `pio_readdata`; verifica o bit `BUSY` e extrai os bits `[7:4]` com o dígito predito
+- **Start (0x5):** monta a palavra `0x5000_0000` e pulsa uma vez
+- **Pesos W (0x2):** protocolo de duas etapas por elemento — primeiro envia o endereço de 17 bits via opcode `0x6`, depois o dado via opcode `0x2` (necessário porque o campo `ADDR` da ISA tem apenas 12 bits e a `ram_pesos` tem 100 352 posições)
+- **Demais (img, bias, beta):** loop que lê 8 bits (imagem) ou 16 bits (pesos) do buffer, monta a palavra `[opcode(4) | addr(12) | data(16)]` e pulsa
+
+**4. `pulse_hw`** — sub-rotina que gera o pulso de escrita: escreve `0x2` em `pio_hpswrite` (borda de subida), aguarda ~150 ciclos de delay e escreve `0x0` (borda de descida). Esse sinal é o `hps_write` que o `decodificador_isa.v` usa para registrar a instrução.
+
+**5. Encerramento** — `munmap` desfaz o mapeamento e `close` fecha o `/dev/mem`.
+
+---
+
+## 20. Estrutura da Pasta `hps/`
+
+```
+hps/
+├── instrucoes.c   ← driver principal em C
+├── rotinas.s      ← rotinas ARM assembly (syscalls + acesso ao hardware)
+└── Makefile       ← compilação cruzada para ARM
+```
+
+Os arquivos binários de pesos (`pesos.bin`, `bias.bin`, `beta.bin`) e a imagem de teste (`quatro.bin`) devem ser copiados para o mesmo diretório antes de executar o driver na placa.
 ---
 
 <div align="center">
