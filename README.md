@@ -818,10 +818,14 @@ A função `processar_hardware_asm(buffer, opcode, limite)` implementa em ARM as
 
 ```
 hps/
-├── instrucoes.c   ← driver principal em C
-├── rotinas.s      ← rotinas ARM assembly (syscalls + acesso ao hardware)
-├── hps_0.h        ← cabeçalho com offsets dos PIOs gerado pelo sopcinfo
-└── ghrd_top.v     ← top-level atualizado com os fios HPS↔ELM     
+├── instrucoes.c        ← driver em C com menu interativo
+├── rotinas.s           ← rotinas ARM assembly (syscalls + acesso ao hardware)
+├── hps_0.h             ← cabeçalho com offsets dos PIOs gerado a partir do soc_system.sopcinfo
+├── ghrd_top.v          ← top-level do projeto: instancia o soc_system (gerado pelo soc_system.qsys) e o elm_accel
+└── quartus/
+    ├── soc_system.qpf  ← arquivo de projeto Quartus
+    ├── soc_system.qsf  ← configurações de pinos e síntese
+    └── soc_system.qsys ← definição dos PIOs e conexões no Platform Designer
 ```
 
 **Atenção:** o `ghrd_top.v` é o top-level do projeto Quartus — ele instancia tanto o `soc_system` (gerado pelo Platform Designer) quanto o `elm_accel` (co-processador desenvolvido no Marco 1), substituindo o top-level original do projeto base.
