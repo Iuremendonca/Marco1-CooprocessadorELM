@@ -824,7 +824,7 @@ hps/
 └── ghrd_top.v     ← top-level atualizado com os fios HPS↔ELM     
 ```
 
-Os arquivos binários de pesos (`pesos.bin`, `bias.bin`, `beta.bin`) e a imagem de teste (`quatro.bin`) devem ser copiados para o mesmo diretório antes de executar o driver na placa.
+**Atenção:** o `ghrd_top.v` é o top-level do projeto Quartus — ele instancia tanto o `soc_system` (gerado pelo Platform Designer) quanto o `elm_accel` (co-processador desenvolvido no Marco 1), substituindo o top-level original do projeto base.
 ---
 
 <div align="center">
