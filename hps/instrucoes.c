@@ -2,54 +2,80 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include "api.h"
 
-// Protótipo: r0 = buffer, r1 = opcode, r2 = limite
-extern uint32_t processar_hardware_asm(void *buffer, uint32_t opcode, uint32_t limite);
+static void cleanup(void) { exit_hw_asm(); }
 
-int main(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("Uso: ./driver <img|bias|beta|w|start|status>\n");
+/* Configuração de cada tipo de dado */
+typedef struct {
+    const char *arquivo;
+    size_t      elem_bytes;
+    uint32_t    limite;
+} dado_t;
+
+static const dado_t dados_cfg[] = {
+    { "quatro.bin", 1, 784    },  /* j=0: img  */
+    { "pesos.bin",  2, 100352 },  /* j=1: w    */
+    { "bias.bin",   2, 128    },  /* j=2: bias */
+    { "beta.bin",   2, 1280   },  /* j=3: beta */
+};
+
+int main(void) {
+    if (init_hw_asm() != 0) {
+        fprintf(stderr, "Erro: falha ao mapear /dev/mem.\n");
         return 1;
     }
+    atexit(cleanup);
 
-    char *tipo = argv[1];
-    uint32_t opcode = 0, limite = 0;
-    char *filename = NULL;
+    /* Pré-carrega todos os buffers uma única vez */
+    void *bufs[4] = {NULL};
+    for (int j = 0; j < 4; j++) {
+        const dado_t *cfg = &dados_cfg[j];
 
-    // --- Chamadas Diretas de Função ---
-    if (strcmp(tipo, "start") == 0) {
-        processar_hardware_asm(NULL, 5, 1);
-        printf("Inferência disparada.\n");
-        return 0;
-    } 
+        FILE *f = fopen(cfg->arquivo, "rb");
+        if (!f) { perror(cfg->arquivo); return 1; }
 
-    if (strcmp(tipo, "status") == 0) {
-        uint32_t resultado = processar_hardware_asm(NULL, 0, 1);
-        printf("Resultado do hardware: %u\n", resultado);
-        return 0;
+        bufs[j] = malloc(cfg->limite * cfg->elem_bytes);
+        if (!bufs[j]) { fclose(f); fprintf(stderr, "Sem memória.\n"); return 1; }
+
+        fread(bufs[j], cfg->elem_bytes, cfg->limite, f);
+        fclose(f);
     }
 
-    // --- Mapeamento de Arquivos e Opcodes ---
-    if (strcmp(tipo, "img") == 0)       { filename = "quatro.bin"; opcode = 1; limite = 784; }
-    else if (strcmp(tipo, "w") == 0)    { filename = "pesos.bin";  opcode = 2; limite = 100352; }
-    else if (strcmp(tipo, "bias") == 0) { filename = "bias.bin";   opcode = 3; limite = 128; }
-    else if (strcmp(tipo, "beta") == 0) { filename = "beta.bin";   opcode = 4; limite = 1280; }
-    else { return 1; }
+    /* Loop de 10 inferências */
+    for (int i = 0; i < 10; i++) {
+        reset_hw_asm();
+        printf("\n=== Inferência %d ===\n", i + 1);
 
-    // --- Conversão e Carga de Arquivos ---
-    FILE *f = fopen(filename, "rb");
-    if (!f) { perror("Erro ao abrir arquivo"); return 1; }
+        carregar_img_asm (bufs[0]);
+        carregar_w_asm   (bufs[1]);
+        carregar_bias_asm(bufs[2]);
+        carregar_beta_asm(bufs[3]);
 
-    // Imagem (8-bit), demais (16-bit)
-    size_t sz = (opcode == 1) ? 1 : 2; 
-    void *data_buffer = malloc(limite * sz);
-    fread(data_buffer, sz, limite, f);
-    fclose(f);
+        uint32_t status[5] = {0};
+        status_asm(status);
 
-    // Envio direto ao driver
-    processar_hardware_asm(data_buffer, opcode, limite);
+        printf("[0]    Busy       : %u\n", status[0]);
+        printf("[1]    Done       : %u\n", status[1]);
+        printf("[2]    Error      : %u\n", status[2]);
+        printf("[7:4]  Resultado  : %u\n", status[3]);
+        printf("[31:8] Ciclos     : %u\n\n", status[4]);
+        start_asm();
 
-    free(data_buffer);
-    printf("Carga de %s concluída.\n", tipo);
+        
+        status_asm(status);
+
+      
+        printf("[0]    Busy       : %u\n", status[0]);
+        printf("[1]    Done       : %u\n", status[1]);
+        printf("[2]    Error      : %u\n", status[2]);
+        printf("[7:4]  Resultado  : %u\n", status[3]);
+        printf("[31:8] Ciclos     : %u\n", status[4]);
+    }
+
+    /* Libera buffers */
+    for (int j = 0; j < 4; j++)
+        free(bufs[j]);
+
     return 0;
 }
